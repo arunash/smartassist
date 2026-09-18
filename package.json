@@ -1,0 +1,16 @@
+{
+  "name": "smartassist",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A live assistant for conversations that matter. Runs on your machine.",
+  "license": "MIT",
+  "scripts": {
+    "start": "node server.mjs",
+    "listen": "node listen.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
+    "express": "^5.1.0",
+    "zod": "^4.0.0"
+  }
+}
