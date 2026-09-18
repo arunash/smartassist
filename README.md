@@ -31,9 +31,27 @@ what SmartAssist actually encodes:
 care notes — or paste text in. Say who you're speaking with and what you want out
 of it. It reads everything once and builds the briefing it will carry.
 
-**2 · It proposes the topics.** Questions grounded in *your* figures, each with what
-would count as a real answer, what a dodge looks like, and the follow-up. You edit,
-drop what you don't need, and go.
+**2 · It reads, researches, and proposes the topics.** Three passes, not one:
+
+- **Digest** — condenses what you gave it and pulls out the checkable figures.
+- **Augment and validate** — this is the part that matters. It brings in what your
+  files *don't* say (the normal range, the statutory limit, the standard of care,
+  the deadline — searched live, with sources) and derives new numbers from your own
+  (a rate, a ratio, a per-kilogram dose, a trend). Then it turns that same knowledge
+  back on your material and tells you what doesn't hold up: figures that contradict
+  each other, values outside a plausible range, dates already passed, conclusions
+  your numbers don't actually support.
+- **Propose** — questions grounded in your figures, each with what would count as a
+  real answer, what a dodge looks like, and the follow-up.
+
+Provenance is kept separate the whole way through, and that is a safety property
+rather than a nicety: **what you gave it** you can assert in the room; **what it
+derived from your numbers** you can assert too; **what it researched** is a reason to
+ask a question, never a claim to put in your own mouth. A fact the model supplied must
+never come back at a doctor or a CPA as though it came from your records.
+
+The portal shows all three, collapsed, under the questions — including what it thinks
+is wrong with what you gave it.
 
 **3 · Live assist.** Your agenda ticks off on the left as questions genuinely get
 answered. Flags accumulate on the right — a dodge, a claim that contradicts your own

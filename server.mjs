@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import * as store from "./lib/store.mjs";
 import { readPath, sourceSummary } from "./lib/context.mjs";
-import { digestContext, proposeAgenda, analyze, debrief, MODEL } from "./lib/ai.mjs";
+import { digestContext, augmentAndValidate, proposeAgenda, analyze, debrief, MODEL } from "./lib/ai.mjs";
 import { profileList } from "./lib/profiles.mjs";
 
 const ROOT = import.meta.dirname;
@@ -94,6 +94,13 @@ app.post("/api/calls/:id/prepare", async (req, r) => {
     call.keyFacts = d.keyFacts;
     call.gaps = d.gaps;
 
+    // Second pass: what the files don't say, and what in them doesn't hold up.
+    const augment = await augmentAndValidate({
+      apiKey, who: call.who, goal: call.goal, profile: call.profile,
+      digest: d.digest, keyFacts: d.keyFacts,
+    });
+    call.augment = augment;
+
     const priors = store
       .priorCalls(call.id, call.who)
       .map((p) => `### ${p.title} (${p.createdAt.slice(0, 10)})\n${p.debrief.slice(0, 6000)}`)
@@ -106,6 +113,7 @@ app.post("/api/calls/:id/prepare", async (req, r) => {
       profile: call.profile,
       digest: d.digest,
       keyFacts: d.keyFacts,
+      augment,
       priors,
     });
     call.agenda = agenda;
@@ -274,6 +282,13 @@ app.post("/api/calls/:id/debrief", async (req, r) => {
   const call = store.load(req.params.id);
   if (!call) return r.status(404).json({ error: "no such call" });
   try {
+    // Second pass: what the files don't say, and what in them doesn't hold up.
+    const augment = await augmentAndValidate({
+      apiKey, who: call.who, goal: call.goal, profile: call.profile,
+      digest: d.digest, keyFacts: d.keyFacts,
+    });
+    call.augment = augment;
+
     const priors = store
       .priorCalls(call.id, call.who)
       .map((p) => `### ${p.title} (${p.createdAt.slice(0, 10)})\n${p.debrief.slice(0, 6000)}`)

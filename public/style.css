@@ -89,12 +89,12 @@ button:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
 .card.click{cursor:pointer;} .card.click:hover{border-color:var(--accent);}
 .card .t{font-weight:600;} .card .m{font-size:13px; color:var(--muted); margin-top:3px;}
 .tag{
-  display:inline-block; font-family:ui-monospace,monospace; font-size:10px; font-weight:600;
+  display:inline-block; align-self:flex-start; flex:0 0 auto; font-family:ui-monospace,monospace; font-size:10px; font-weight:600;
   letter-spacing:.07em; text-transform:uppercase; padding:2px 7px; border-radius:3px;
   border:1px solid var(--rule-2); color:var(--muted);
 }
-.tag.live{color:var(--critical); border-color:var(--critical); background:var(--critical-soft);}
-.tag.debrief{color:var(--settled); border-color:var(--settled); background:var(--settled-soft);}
+.tag.stage-live{color:var(--critical); border-color:var(--critical); background:var(--critical-soft);}
+.tag.stage-debrief{color:var(--settled); border-color:var(--settled); background:var(--settled-soft);}
 .src{display:flex; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid var(--rule); font-size:13px;}
 .src:last-child{border-bottom:none;}
 .src .p{font-family:ui-monospace,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
@@ -114,9 +114,9 @@ button:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
 .topic{font-size:11px; text-transform:uppercase; letter-spacing:.09em; color:var(--faint); margin:20px 0 7px; font-weight:600;}
 
 /* live */
-.live{display:grid; grid-template-columns:1.1fr 1fr; gap:0; height:calc(100vh - 210px); min-height:420px;}
-.live > div{overflow-y:auto; padding:0 18px;}
-.live > div + div{border-left:1px solid var(--rule);}
+.liveboard{display:grid; grid-template-columns:1.1fr 1fr; gap:0; height:calc(100vh - 210px); min-height:420px;}
+.liveboard > div{overflow-y:auto; padding:0 18px;}
+.liveboard > div + div{border-left:1px solid var(--rule);}
 .flag{border-radius:5px; padding:9px 12px; margin-bottom:7px; border-left:3px solid var(--rule-2); background:var(--raised); animation:in .18s ease-out;}
 @keyframes in{from{opacity:0; transform:translateY(-4px);}}
 .flag .fl{font-weight:600; font-size:14px;} .flag .fq{font-size:12px; color:var(--muted); margin-top:3px;}
@@ -140,3 +140,15 @@ button:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
 .md code{background:var(--sunk); padding:1px 5px; border-radius:3px; font-size:13px;}
 .md blockquote{border-left:2px solid var(--rule-2); margin:12px 0; padding-left:14px; color:var(--ink-2); font-style:italic;}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;}}
+
+/* Collapsed analysis — worth reading once, never ahead of the questions themselves. */
+.panel{border:1px solid var(--rule); border-radius:6px; background:var(--raised); margin-bottom:8px;}
+.panel.warn{border-left:3px solid var(--caution);}
+.panel > summary{padding:11px 14px; cursor:pointer; font-weight:600; font-size:14px; list-style:none; display:flex; align-items:center; gap:9px;}
+.panel > summary::-webkit-details-marker{display:none;}
+.panel > summary::before{content:"▸"; color:var(--faint); font-size:11px;}
+.panel[open] > summary::before{content:"▾";}
+.panel > summary:hover{color:var(--accent);}
+.panel .ct{font-family:ui-monospace,monospace; font-size:11px; color:var(--muted); border:1px solid var(--rule-2); border-radius:9px; padding:0 7px;}
+.panel ul{margin:0; padding:0 18px 14px 34px; font-size:14px;}
+.panel li{margin:10px 0; line-height:1.5;}

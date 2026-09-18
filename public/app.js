@@ -9,6 +9,12 @@ const api = async (url, opts) => {
 };
 const post = (u, b) => api(u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b ?? {}) });
 
+function panel(title, items, tone, render) {
+  if (!items?.length) return "";
+  return `<details class="panel ${tone}"><summary>${esc(title)} <span class="ct">${items.length}</span></summary>
+    <ul>${items.map((i) => `<li>${render(i)}</li>`).join("")}</ul></details>`;
+}
+
 const STAGES = [
   ["context", "Context & goal"],
   ["agenda", "Topics"],
@@ -67,7 +73,7 @@ async function listCalls() {
         <div class="row" style="justify-content:space-between">
           <div><div class="t">${esc(c.title)}</div>
           <div class="m">${esc(c.who || "—")} · ${c.questionCount} questions · ${c.flagCount} flags · ${c.createdAt.slice(0, 10)}</div></div>
-          <span class="tag ${c.stage}">${c.stage}</span>
+          <span class="tag stage-${c.stage}">${c.stage}</span>
         </div></div>`,
             )
             .join("")
@@ -176,7 +182,7 @@ function stageContext(call) {
   };
   $("#prep").onclick = async () => {
     $("#prep").disabled = true;
-    $("#spin").textContent = "Reading your context and proposing topics…";
+    $("#spin").textContent = "Reading your context, researching what it does not cover, then proposing topics…";
     try {
       await post(`/api/calls/${call.id}/prepare`);
       showCall(call.id);
@@ -193,10 +199,22 @@ function stageAgenda(call) {
     <h1>${esc(a.title)}</h1>
     <p class="sub">Proposed from your context. Edit anything, drop what you don't need, then start the call.</p>
 
-    ${call.gaps?.length ? `<div class="note warn"><b>Missing from your context:</b><ul>${call.gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul></div>` : ""}
-    ${a.rules?.length ? `<div class="note"><b>Standing rules — these outrank the agenda:</b><ul>${a.rules.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
+    ${a.rules?.length ? `<div class="note"><b>Standing rules — these outrank the agenda</b>
+      <ul>${a.rules.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
 
     <div id="qs"></div>
+
+    <h2>What the engine did with your context</h2>
+    ${panel("This doesn't hold up", call.augment?.validations, "warn", (v) =>
+      `<b>${esc(v.issue)}</b> <span class="tag">${esc(v.severity)}</span><br />${esc(v.detail)}<br /><span class="m">Settle it: ${esc(v.howToSettle)}</span>`)}
+    ${panel("Added — researched, not from your files", call.augment?.augmentations, "", (a) =>
+      `<b>${esc(a.point)}</b> <span class="tag">${esc(a.confidence)}</span><br />${esc(a.detail)}<br /><span class="m">${esc(a.basis)}${
+        a.source && a.source !== "general knowledge" ? ` · <a href="${esc(a.source)}" target="_blank" rel="noreferrer">source</a>` : ""}</span>`)}
+    ${panel("Derived from your own numbers", call.augment?.derivedFacts, "", (f) =>
+      `<b>${esc(f.fact)}:</b> ${esc(f.value)}<br /><span class="m">${esc(f.basis)}</span>`)}
+    ${panel("Still missing from your context", call.gaps, "warn", (g) => esc(g))}
+
+
 
     <h2>Start the call</h2>
     <div class="card">
@@ -266,7 +284,7 @@ function stageLive(call) {
         <button id="end">End &amp; debrief</button>
       </div>
     </div>
-    <div class="live">
+    <div class="liveboard">
       <div><h2>Agenda</h2><div id="qs"></div></div>
       <div><h2>Live</h2><div id="flags"></div></div>
     </div>
