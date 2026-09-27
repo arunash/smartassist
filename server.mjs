@@ -1,13 +1,23 @@
 import express from "express";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import * as store from "./lib/store.mjs";
-import { readPath, sourceSummary } from "./lib/context.mjs";
+import { readPath, extractText, sourceSummary, READABLE } from "./lib/context.mjs";
 import { digestContext, augmentAndValidate, proposeAgenda, analyze, debrief, MODEL } from "./lib/ai.mjs";
 import { profileList } from "./lib/profiles.mjs";
+import { scanForInjection } from "./lib/guard.mjs";
 
 const ROOT = import.meta.dirname;
 const PORT = Number(process.env.PORT ?? 7400);
+// Loopback only by default: this server holds medical and financial records and can
+// read files on disk. HOST=0.0.0.0 opens it to the network, and then every request
+// needs the access token printed at startup.
+const HOST = process.env.HOST ?? "127.0.0.1";
+const LOOPBACK = ["127.0.0.1", "::1", "localhost"].includes(HOST);
+const TOKEN = LOOPBACK ? null : (process.env.SMARTASSIST_TOKEN || crypto.randomBytes(24).toString("base64url"));
+const STAGES = new Set(["context", "agenda", "live", "debrief"]);
+const ID = /^\d{8}-[a-z0-9]{4}$/;
 const apiKey = readKey();
 if (!apiKey) {
   console.error("No ANTHROPIC_API_KEY. Copy .env.example to .env and add your key.");
@@ -15,8 +25,48 @@ if (!apiKey) {
 }
 
 const app = express();
-app.use(express.json({ limit: "32mb" }));
+app.disable("x-powered-by");
+
+app.use((req, r, next) => {
+  // DNS rebinding: a hostile site can point its own hostname at 127.0.0.1. Only
+  // answer to names that are actually this machine (or any name, once a token is set).
+  const host = String(req.headers.host ?? "").replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
+  if (LOOPBACK && !["localhost", "127.0.0.1", "::1"].includes(host)) return r.status(421).end("bad host");
+
+  // Cross-site requests: any other web page in the browser could otherwise POST here.
+  const origin = req.headers.origin;
+  if (origin && req.method !== "GET" && req.method !== "HEAD") {
+    try {
+      if (new URL(origin).host !== req.headers.host) return r.status(403).json({ error: "cross-origin request refused" });
+    } catch {
+      return r.status(403).json({ error: "bad origin" });
+    }
+  }
+
+  if (TOKEN) {
+    const cookie = /(?:^|;\s*)sa_token=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
+    const given = req.query.t ?? cookie;
+    const ok = typeof given === "string" && given.length === TOKEN.length &&
+      crypto.timingSafeEqual(Buffer.from(given), Buffer.from(TOKEN));
+    if (!ok) return r.status(401).end("SmartAssist: open the link with the access token printed at startup.");
+    if (req.query.t) r.setHeader("Set-Cookie", `sa_token=${TOKEN}; HttpOnly; SameSite=Strict; Path=/`);
+  }
+
+  r.setHeader("Content-Security-Policy",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+    "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+  r.setHeader("X-Content-Type-Options", "nosniff");
+  r.setHeader("Referrer-Policy", "no-referrer");
+  r.setHeader("Cache-Control", "no-store");
+  next();
+});
+
+app.use(express.json({ limit: "64mb" }));
 app.use(express.static(path.join(ROOT, "public")));
+
+// Every call id becomes a directory name — reject anything that is not one of ours,
+// so "..%2F.." can never reach the filesystem (load, save, or recursive delete).
+app.param("id", (req, r, next, id) => (ID.test(id) ? next() : r.status(400).json({ error: "bad call id" })));
 
 /* --------------------------------------------------------------- sessions */
 // One in-memory live session per call: SSE subscribers and the analysis guard.
@@ -32,13 +82,22 @@ app.get("/api/profiles", (_q, r) => r.json(profileList()));
 app.get("/api/calls", (_q, r) => r.json(store.list()));
 
 app.post("/api/calls", (req, r) => {
-  const { title, who, goal, profile } = req.body ?? {};
-  r.json(store.createCall({ title: title || "Untitled call", who, goal, profile }));
+  const { title, who, goal, profile, allowResearch } = req.body ?? {};
+  r.json(store.createCall({ title: title || "Untitled call", who, goal, profile, allowResearch: allowResearch !== false }));
+});
+
+// Settings the user can change until the briefing is built.
+app.patch("/api/calls/:id", (req, r) => {
+  const call = store.load(req.params.id);
+  if (!call) return r.status(404).json({ error: "no such call" });
+  if (typeof req.body?.allowResearch === "boolean") call.allowResearch = req.body.allowResearch;
+  store.save(call);
+  r.json({ ok: true, allowResearch: call.allowResearch });
 });
 
 app.get("/api/calls/:id", (req, r) => {
   const c = store.load(req.params.id);
-  return c ? r.json(c) : r.status(404).json({ error: "no such call" });
+  return c ? r.json({ ...c, contextSources: publicSources(c) }) : r.status(404).json({ error: "no such call" });
 });
 
 app.delete("/api/calls/:id", (req, r) => {
@@ -54,28 +113,58 @@ app.post("/api/calls/:id/context", (req, r) => {
   const { kind, label, text, path: target } = req.body ?? {};
 
   try {
-    if (kind === "path") {
+    if (kind === "upload") {
+      // One document per request, sent as base64 from the browser. The original is
+      // kept in the call folder; only its text goes into the briefing.
+      const { name, data } = req.body;
+      if (!name || !data) return r.status(400).json({ error: "no file" });
+      const saved = store.saveDocument(call.id, name, Buffer.from(data, "base64"));
+      const extracted = extractText(saved);
+      if (extracted === null) {
+        store.removeDocument(call.id, saved);
+        return r.status(400).json({ error: `${name}: can't read this format. Supported: ${READABLE.join(" ")}` });
+      }
+      if (!extracted.trim()) {
+        store.removeDocument(call.id, saved);
+        return r.status(400).json({ error: `${name}: no text found — if it's a scanned PDF, it needs OCR first` });
+      }
+      call.contextSources.push({ kind: "upload", label: String(name).slice(0, 200), file: saved, text: extracted, chars: extracted.length });
+    } else if (kind === "path") {
       const files = readPath(target);
       if (!files.length) return r.status(400).json({ error: `Nothing readable at ${target}` });
       for (const f of files) {
         call.contextSources.push({ kind: "path", label: f.path, text: f.text, chars: f.chars });
       }
+      if (files.skipped) console.log(`[context] skipped ${files.skipped} sensitive or non-file entries under ${target}`);
     } else {
       if (!text?.trim()) return r.status(400).json({ error: "empty" });
-      call.contextSources.push({ kind: kind ?? "paste", label: label || "pasted", text, chars: text.length });
+      call.contextSources.push({ kind: "paste", label: String(label || "pasted").slice(0, 200), text: String(text), chars: text.length });
     }
   } catch (e) {
     return r.status(400).json({ error: e.message });
   }
 
+  // Surface anything that reads like instructions to an AI — the user should see it,
+  // not just the model.
+  for (const src of call.contextSources) if (!src.scanned) {
+    src.scanned = true;
+    const hits = scanForInjection(src.text);
+    if (hits.length) src.warning = `Contains text that looks like instructions to an AI — it will be treated as data, not obeyed: “${hits[0]}”`;
+  }
   store.save(call);
-  r.json({ ok: true, sources: call.contextSources.map(({ text, ...s }) => s) });
+  r.json({ ok: true, sources: publicSources(call) });
 });
+
+// Never send document text or on-disk locations back to the browser — only what it shows.
+const publicSources = (call) => call.contextSources.map(({ kind, label, chars, warning }) => ({ kind, label, chars, warning }));
 
 app.delete("/api/calls/:id/context/:idx", (req, r) => {
   const call = store.load(req.params.id);
   if (!call) return r.status(404).json({ error: "no such call" });
-  call.contextSources.splice(Number(req.params.idx), 1);
+  const idx = Number(req.params.idx);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= call.contextSources.length) return r.status(400).json({ error: "bad index" });
+  const [gone] = call.contextSources.splice(idx, 1);
+  if (gone?.kind === "upload") store.removeDocument(call.id, gone.file);
   store.save(call);
   r.json({ ok: true });
 });
@@ -98,6 +187,7 @@ app.post("/api/calls/:id/prepare", async (req, r) => {
     const augment = await augmentAndValidate({
       apiKey, who: call.who, goal: call.goal, profile: call.profile,
       digest: d.digest, keyFacts: d.keyFacts,
+      allowResearch: call.allowResearch !== false,
     });
     call.augment = augment;
 
@@ -132,7 +222,10 @@ app.post("/api/calls/:id/prepare", async (req, r) => {
 app.put("/api/calls/:id/agenda", (req, r) => {
   const call = store.load(req.params.id);
   if (!call) return r.status(404).json({ error: "no such call" });
-  call.agenda = req.body.agenda;
+  const a = req.body?.agenda;
+  if (!a || !Array.isArray(a.questions)) return r.status(400).json({ error: "bad agenda" });
+  if (req.body.stage && !STAGES.has(req.body.stage)) return r.status(400).json({ error: "bad stage" });
+  call.agenda = a;
   if (req.body.stage) call.stage = req.body.stage;
   store.save(call);
   r.json(call);
@@ -143,7 +236,7 @@ app.put("/api/calls/:id/agenda", (req, r) => {
 app.post("/api/calls/:id/line", (req, r) => {
   const call = store.load(req.params.id);
   if (!call) return r.status(404).json({ error: "no such call" });
-  const text = String(req.body?.text ?? "").trim();
+  const text = String(req.body?.text ?? "").trim().slice(0, 5000);
   if (!text) return r.json({ ok: true });
   call.lines.push({ speaker: String(req.body?.speaker ?? "room").slice(0, 40), text, at: Date.now() });
   if (call.stage === "agenda") call.stage = "live";
@@ -154,6 +247,7 @@ app.post("/api/calls/:id/line", (req, r) => {
 });
 
 app.post("/api/calls/:id/analyze", (req, r) => {
+  if (!store.load(req.params.id)) return r.status(404).json({ error: "no such call" });
   void maybeAnalyze(req.params.id, true);
   r.json({ ok: true });
 });
@@ -162,7 +256,7 @@ app.post("/api/calls/:id/answered", (req, r) => {
   const call = store.load(req.params.id);
   if (!call) return r.status(404).json({ error: "no such call" });
   const id = String(req.body?.id ?? "");
-  if (id && !call.answered.includes(id)) call.answered.push(id);
+  if (id && call.agenda?.questions?.some((q) => q.id === id) && !call.answered.includes(id)) call.answered.push(id);
   store.save(call);
   emit(call.id, { type: "answered", id });
   r.json({ ok: true });
@@ -175,6 +269,7 @@ app.get("/api/calls/:id/events", (req, r) => {
     Connection: "keep-alive",
   });
   r.write(": connected\n\n");
+  if (!store.load(req.params.id)) return r.end();
   const s = sessionOf(req.params.id);
   s.clients.add(r);
   req.on("close", () => s.clients.delete(r));
@@ -282,13 +377,6 @@ app.post("/api/calls/:id/debrief", async (req, r) => {
   const call = store.load(req.params.id);
   if (!call) return r.status(404).json({ error: "no such call" });
   try {
-    // Second pass: what the files don't say, and what in them doesn't hold up.
-    const augment = await augmentAndValidate({
-      apiKey, who: call.who, goal: call.goal, profile: call.profile,
-      digest: d.digest, keyFacts: d.keyFacts,
-    });
-    call.augment = augment;
-
     const priors = store
       .priorCalls(call.id, call.who)
       .map((p) => `### ${p.title} (${p.createdAt.slice(0, 10)})\n${p.debrief.slice(0, 6000)}`)
@@ -315,7 +403,8 @@ function readKey() {
   }
 }
 
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, HOST, () => {
   console.log(`SmartAssist — http://localhost:${PORT}`);
+  if (TOKEN) console.log(`⚠ listening on ${HOST} — open from another device with: http://<this-machine>:${PORT}/?t=${TOKEN}`);
   console.log(`model: ${MODEL} · data: ${store.DATA}`);
 });

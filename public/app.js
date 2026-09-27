@@ -1,6 +1,8 @@
 const $ = (s, r = document) => r.querySelector(s);
 const view = $("#view");
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// Only http(s) links from model output — a researched "source" could be javascript:.
+const safeUrl = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : ""; } catch { return ""; } };
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const api = async (url, opts) => {
   const r = await fetch(url, opts);
   const j = await r.json().catch(() => ({}));
@@ -14,6 +16,21 @@ function panel(title, items, tone, render) {
   return `<details class="panel ${tone}"><summary>${esc(title)} <span class="ct">${items.length}</span></summary>
     <ul>${items.map((i) => `<li>${render(i)}</li>`).join("")}</ul></details>`;
 }
+
+function researchToggle(id, on) {
+  return `<label class="toggle"><input type="checkbox" id="${id}" ${on ? "checked" : ""} />
+    <span><b>Allow external research</b><br /><span class="m">Searches the web for what your files don't
+    say — normal ranges, limits, guidelines, deadlines. Search queries are built from your context, so they
+    leave your machine. Off: it works only from your material and the arithmetic on it.</span></span></label>`;
+}
+
+const readFile64 = (f) =>
+  new Promise((ok, no) => {
+    const r = new FileReader();
+    r.onload = () => ok(String(r.result).split(",")[1] ?? "");
+    r.onerror = () => no(r.error);
+    r.readAsDataURL(f);
+  });
 
 const STAGES = [
   ["context", "Context & goal"],
@@ -40,6 +57,11 @@ async function route() {
   location.hash = "#/";
 }
 addEventListener("hashchange", route);
+document.addEventListener("click", (e) => {
+  const go = e.target.closest("[data-go]");
+  if (go) location.hash = go.dataset.go;
+});
+$("#home").onclick = () => (location.hash = "#/");
 
 /* ------------------------------------------------------------------- list */
 
@@ -60,6 +82,7 @@ async function listCalls() {
       </div>
       <label><span class="lb">What do you want out of it?</span>
         <textarea id="goal" rows="3" placeholder="Be specific. &quot;Leave with a written answer on whether the losses offset my W-2 income&quot; beats &quot;discuss taxes&quot;."></textarea></label>
+      ${researchToggle("research", true)}
       <div class="row"><button id="create">Create call</button></div>
       <div id="err"></div>
     </div>
@@ -69,11 +92,11 @@ async function listCalls() {
       calls.length
         ? calls
             .map(
-              (c) => `<div class="card click" onclick="location.hash='#/c/${c.id}'">
+              (c) => `<div class="card click" data-go="#/c/${esc(c.id)}">
         <div class="row" style="justify-content:space-between">
           <div><div class="t">${esc(c.title)}</div>
           <div class="m">${esc(c.who || "—")} · ${c.questionCount} questions · ${c.flagCount} flags · ${c.createdAt.slice(0, 10)}</div></div>
-          <span class="tag stage-${c.stage}">${c.stage}</span>
+          <span class="tag stage-${esc(c.stage)}">${esc(c.stage)}</span>
         </div></div>`,
             )
             .join("")
@@ -87,6 +110,7 @@ async function listCalls() {
         who: $("#who").value.trim(),
         goal: $("#goal").value.trim(),
         profile: $("#profile").value,
+        allowResearch: $("#research").checked,
       });
       location.hash = `#/c/${c.id}`;
     } catch (e) {
@@ -114,9 +138,17 @@ function stageContext(call) {
     <h1>${esc(call.title)}</h1>
     <p class="sub">Give it everything relevant. Nothing leaves your machine except the model calls.</p>
 
-    <h2>Point at files on disk</h2>
+    <h2>Upload documents</h2>
+    <div class="card drop" id="drop">
+      <p style="margin:0 0 10px">Drop files here, or <label class="linkish">choose files<input type="file" id="files" multiple hidden
+        accept=".pdf,.docx,.doc,.rtf,.odt,.txt,.md,.csv,.json,.jsonl,.html,.xml,.yaml,.yml,.log" /></label></p>
+      <span class="m">PDF, Word, RTF, text, Markdown, CSV, JSON. Originals are kept in this call's folder on your machine.</span>
+      <div id="upl" class="m" style="margin-top:8px"></div>
+    </div>
+
+    <h2>Or point at files on disk</h2>
     <div class="card">
-      <label><span class="lb">A file or folder — it reads text, Markdown, JSON, CSV and PDF</span>
+      <label><span class="lb">A file or folder — it reads PDF, Word, RTF, text, Markdown, JSON and CSV. Keys, credentials and hidden files are always skipped</span>
         <input id="path" placeholder="~/tax-returns  ·  ~/notes/visit-summary.pdf" /></label>
       <div class="row"><button class="ghost" id="addPath">Add path</button></div>
     </div>
@@ -130,6 +162,9 @@ function stageContext(call) {
 
     <h2>Added (<span id="n">${call.contextSources.length}</span>)</h2>
     <div class="card" id="srcs"></div>
+
+    <h2>Research</h2>
+    <div class="card">${researchToggle("research", call.allowResearch !== false)}</div>
     <div id="err"></div>
     <div class="row" style="margin-top:18px">
       <button id="prep" ${call.contextSources.length ? "" : "disabled"}>Suggest topics →</button>
@@ -145,7 +180,8 @@ function stageContext(call) {
       ? sources
           .map(
             (s, i) =>
-              `<div class="src"><span class="p">${esc(s.label)}</span>
+              `<div class="src"><span class="p"><span class="tag">${s.kind === "upload" ? "uploaded" : s.kind === "path" ? "on disk" : "pasted"}</span> ${esc(s.label)}</span>
+               ${s.warning ? `<div class="err srcwarn">${esc(s.warning)}</div>` : ""}
                <span>${(s.chars / 1000).toFixed(1)}k <button class="danger" data-i="${i}" style="padding:2px 8px;font-size:12px">remove</button></span></div>`,
           )
           .join("")
@@ -161,6 +197,31 @@ function stageContext(call) {
   paint(call.contextSources.map(({ text, ...s }) => s));
 
   const fail = (e) => ($("#err").innerHTML = `<div class="err">${esc(e.message)}</div>`);
+
+  const upload = async (list) => {
+    $("#err").innerHTML = "";
+    const files = [...list];
+    const problems = [];
+    for (const [n, f] of files.entries()) {
+      $("#upl").textContent = `Reading ${f.name} (${n + 1} of ${files.length})…`;
+      try {
+        const r = await post(`/api/calls/${call.id}/context`, { kind: "upload", name: f.name, data: await readFile64(f) });
+        paint(r.sources);
+      } catch (e) { problems.push(e.message); }
+    }
+    $("#upl").textContent = "";
+    if (problems.length) fail(new Error(problems.join("\n")));
+  };
+  $("#files").onchange = (e) => { upload(e.target.files); e.target.value = ""; };
+  const drop = $("#drop");
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); upload(e.dataTransfer.files); };
+
+  $("#research").onchange = async (e) => {
+    try { await api(`/api/calls/${call.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allowResearch: e.target.checked }) }); } catch (err) { fail(err); }
+  };
 
   $("#addPath").onclick = async () => {
     $("#err").innerHTML = "";
@@ -182,7 +243,9 @@ function stageContext(call) {
   };
   $("#prep").onclick = async () => {
     $("#prep").disabled = true;
-    $("#spin").textContent = "Reading your context, researching what it does not cover, then proposing topics…";
+    $("#spin").textContent = $("#research").checked
+      ? "Reading your context, researching what it does not cover, then proposing topics…"
+      : "Reading your context, checking it against itself, then proposing topics — no external research…";
     try {
       await post(`/api/calls/${call.id}/prepare`);
       showCall(call.id);
@@ -205,11 +268,12 @@ function stageAgenda(call) {
     <div id="qs"></div>
 
     <h2>What the engine did with your context</h2>
+    ${call.augment?.researched === false ? `<p class="sub">External research was off — nothing below comes from outside your material.</p>` : ""}
     ${panel("This doesn't hold up", call.augment?.validations, "warn", (v) =>
       `<b>${esc(v.issue)}</b> <span class="tag">${esc(v.severity)}</span><br />${esc(v.detail)}<br /><span class="m">Settle it: ${esc(v.howToSettle)}</span>`)}
     ${panel("Added — researched, not from your files", call.augment?.augmentations, "", (a) =>
       `<b>${esc(a.point)}</b> <span class="tag">${esc(a.confidence)}</span><br />${esc(a.detail)}<br /><span class="m">${esc(a.basis)}${
-        a.source && a.source !== "general knowledge" ? ` · <a href="${esc(a.source)}" target="_blank" rel="noreferrer">source</a>` : ""}</span>`)}
+        safeUrl(a.source) ? ` · <a href="${esc(safeUrl(a.source))}" target="_blank" rel="noopener noreferrer">source</a>` : ""}</span>`)}
     ${panel("Derived from your own numbers", call.augment?.derivedFacts, "", (f) =>
       `<b>${esc(f.fact)}:</b> ${esc(f.value)}<br /><span class="m">${esc(f.basis)}</span>`)}
     ${panel("Still missing from your context", call.gaps, "warn", (g) => esc(g))}
@@ -232,7 +296,7 @@ function stageAgenda(call) {
     $("#qs").innerHTML = Object.entries(byTopic)
       .map(
         ([t, qs]) => `<div class="topic">${esc(t)}</div>` + qs.map((q) => `
-        <div class="q" data-id="${q.id}">
+        <div class="q" data-id="${esc(q.id)}">
           <div class="qs">${esc(q.short)}</div>
           <div class="qd">
             <p><b>Ask:</b> ${esc(q.ask)}</p>
@@ -240,7 +304,7 @@ function stageAgenda(call) {
             <p><b>Answered when:</b> ${esc(q.answeredWhen)}</p>
             <p><b>A dodge looks like:</b> ${esc(q.dodgeLooksLike)}</p>
             <p><b>Follow up:</b> ${esc(q.followUp)}</p>
-            <button class="danger" data-drop="${q.id}" style="padding:3px 9px;font-size:12px">Remove question</button>
+            <button class="danger" data-drop="${esc(q.id)}" style="padding:3px 9px;font-size:12px">Remove question</button>
           </div>
         </div>`).join(""),
       )
@@ -297,7 +361,7 @@ function stageLive(call) {
     for (const q of call.agenda.questions) (byTopic[q.topic] ??= []).push(q);
     $("#qs").innerHTML = Object.entries(byTopic)
       .map(([t, qs]) => `<div class="topic">${esc(t)}</div>` + qs.map((q) => `
-        <div class="q ${answered.has(q.id) ? "done" : ""}" data-id="${q.id}">
+        <div class="q ${answered.has(q.id) ? "done" : ""}" data-id="${esc(q.id)}">
           <div class="qs">${answered.has(q.id) ? "✓ " : ""}${esc(q.short)}</div>
           <div class="qd"><p><b>Ask:</b> ${esc(q.ask)}</p><p><b>Answered when:</b> ${esc(q.answeredWhen)}</p>
           <p><b>Follow up:</b> ${esc(q.followUp)}</p></div>
@@ -320,7 +384,7 @@ function stageLive(call) {
     d.className = "flag " + f.kind;
     d.innerHTML = `<div class="fl">${esc(f.label)}</div><div class="fq">${esc(f.quote ?? "")}</div>`;
     $("#flags").prepend(d);
-    if (f.questionId) $(`.q[data-id="${f.questionId}"]`)?.classList.add("hot");
+    if (f.questionId) $(`.q[data-id="${CSS.escape(f.questionId)}"]`)?.classList.add("hot");
   };
   (call.flags ?? []).forEach(addFlag);
 
@@ -384,7 +448,7 @@ function stageDebrief(call) {
       <h1 style="margin:0">${esc(call.title)}</h1>
       <div class="row">
         <button class="ghost" id="copy">Copy Markdown</button>
-        <button class="ghost" onclick="location.hash='#/'">Done</button>
+        <button class="ghost" data-go="#/">Done</button>
       </div>
     </div>
     <p class="sub">Saved to <span class="mono">data/calls/${call.id}/debrief.md</span>, with the transcript beside it.</p>

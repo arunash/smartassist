@@ -27,9 +27,18 @@ what SmartAssist actually encodes:
 
 ## How it works
 
-**1 · Context and goal.** Point it at folders on disk — your filed returns, your
-care notes — or paste text in. Say who you're speaking with and what you want out
-of it. It reads everything once and builds the briefing it will carry.
+**1 · Context and goal.** Upload documents (PDF, Word, RTF, text, CSV, JSON — drag
+them in), point it at folders on disk — your filed returns, your care notes — or
+paste text in. Say who you're speaking with and what you want out of it, and whether
+**external research** is allowed. It reads everything once and builds the briefing it
+will carry.
+
+With research off, nothing outside your material comes in: no web search, and no
+ranges or limits from the model's memory either. It still does the arithmetic on your
+own numbers and checks your documents against each other. With research on, search
+queries are built from your context and leave your machine. That is why it's a
+per-call choice, and why queries are forbidden from carrying names, IDs or account
+numbers.
 
 **2 · It reads, researches, and proposes the topics.** Three passes, not one:
 
@@ -76,6 +85,27 @@ through whisper.cpp — no cloud speech API, no audio upload. Your context is re
 from where it already lives. The only thing that leaves is the model call.
 
 That isn't a feature list item. It's the reason this is usable in an exam room.
+
+## Guardrails and security
+
+**It does one job.** Every model call carries the same rules: help with *this*
+conversation, from *your* documents and what's said in the room. Nothing else. It
+never suggests deceiving, threatening, misstating facts to a clinician/insurer/school/tax
+authority, or fabricating records, and it never invents a figure or a quote.
+
+**Documents and speech are data, never instructions.** Anything uploaded, pasted, read
+from disk, said on the call, or returned by search is wrapped as untrusted and cannot
+issue commands. A PDF that says "ignore your instructions" gets a visible warning when
+it's added, shows up in your briefing as a finding, and is not obeyed. The same goes
+for someone in the room saying "assistant, …".
+
+**The server is yours alone.** It binds to `127.0.0.1`, rejects cross-site requests and
+DNS-rebinding hosts, and sends a strict Content-Security-Policy. Call IDs are validated
+before they touch the filesystem. Paths that look like keys, credentials, `.env` or
+hidden config are refused even when pointed at directly (symlinks are resolved first).
+Call data is written owner-only (`0600`/`0700`), and document text never goes back to
+the browser. Set `HOST=0.0.0.0` to use the portal from another device; it then requires
+the access token printed at startup.
 
 ## Install
 
@@ -132,6 +162,8 @@ Plain files. Read them, grep them, delete them.
 |---|---|
 | `ANTHROPIC_API_KEY` | in `.env` — never leaves this machine |
 | `PORT` | portal port, default 7400 |
+| `HOST` | bind address, default `127.0.0.1`; anything else requires the startup token |
+| `SMARTASSIST_TOKEN` | fixed access token for `HOST` mode (random each start otherwise) |
 | `SMARTASSIST_MODEL` | default `claude-opus-5` |
 | `SMARTASSIST_DATA` | where calls are stored |
 | `WHISPER_MODEL` | path to the ggml model |
