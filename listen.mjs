@@ -16,7 +16,7 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 const ROOT = import.meta.dirname;
 const callId = process.argv[2];
-if (!callId) {
+if (!callId || !/^\d{8}-[a-z0-9]{4}$/.test(callId)) {
   console.error("usage: node listen.mjs <call-id>   (copy it from the portal)");
   process.exit(1);
 }
@@ -77,7 +77,11 @@ setInterval(async () => {
         console.log(`· ${speech}`);
         await fetch(`${SERVER}/api/calls/${callId}/line`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            // Needed only when the portal is opened to the network (HOST=…).
+            ...(process.env.SMARTASSIST_TOKEN ? { Cookie: `sa_token=${process.env.SMARTASSIST_TOKEN}` } : {}),
+          },
           body: JSON.stringify({ text: speech, speaker: "room" }),
         }).catch((e) => console.error(`portal unreachable: ${e.message}`));
       }

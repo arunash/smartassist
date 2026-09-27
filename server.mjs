@@ -7,6 +7,7 @@ import { readPath, extractText, sourceSummary, READABLE } from "./lib/context.mj
 import { digestContext, augmentAndValidate, proposeAgenda, analyze, debrief, MODEL } from "./lib/ai.mjs";
 import { profileList } from "./lib/profiles.mjs";
 import { scanForInjection } from "./lib/guard.mjs";
+import * as ear from "./lib/ear.mjs";
 
 const ROOT = import.meta.dirname;
 const PORT = Number(process.env.PORT ?? 7400);
@@ -233,6 +234,35 @@ app.put("/api/calls/:id/agenda", (req, r) => {
 
 /* ------------------------------------------------------------ live (step 3) */
 
+// The ear: the server runs listen.mjs so going live is one click, not a terminal.
+app.get("/api/microphones", (_q, r) => r.json({ microphones: ear.microphones(), problems: ear.preflight() }));
+
+app.get("/api/calls/:id/listen", (req, r) => r.json(ear.status(req.params.id)));
+
+app.post("/api/calls/:id/listen", (req, r) => {
+  const call = store.load(req.params.id);
+  if (!call) return r.status(404).json({ error: "no such call" });
+  if (req.body?.on === false) {
+    ear.stop(call.id);
+    return r.json({ on: false });
+  }
+  if (!call.agenda) return r.status(400).json({ error: "Build the topics first" });
+  try {
+    const st = ear.start({
+      callId: call.id,
+      device: req.body?.device,
+      deviceName: String(req.body?.deviceName ?? "").slice(0, 80),
+      port: PORT,
+      token: TOKEN,
+      emit,
+    });
+    if (call.stage === "agenda") { call.stage = "live"; store.save(call); }
+    r.json(st);
+  } catch (e) {
+    r.status(400).json({ error: e.message });
+  }
+});
+
 app.post("/api/calls/:id/line", (req, r) => {
   const call = store.load(req.params.id);
   if (!call) return r.status(404).json({ error: "no such call" });
@@ -270,6 +300,7 @@ app.get("/api/calls/:id/events", (req, r) => {
   });
   r.write(": connected\n\n");
   if (!store.load(req.params.id)) return r.end();
+  r.write(`data: ${JSON.stringify({ type: "ear", ...ear.status(req.params.id) })}\n\n`);
   const s = sessionOf(req.params.id);
   s.clients.add(r);
   req.on("close", () => s.clients.delete(r));
@@ -376,6 +407,7 @@ setInterval(() => {
 app.post("/api/calls/:id/debrief", async (req, r) => {
   const call = store.load(req.params.id);
   if (!call) return r.status(404).json({ error: "no such call" });
+  ear.stop(call.id); // the call is over — close the microphone before anything else
   try {
     const priors = store
       .priorCalls(call.id, call.who)

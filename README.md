@@ -141,6 +141,12 @@ directly, and theirs through the other device's speaker.
 Nothing is installed on the call device, nothing joins the meeting, and you get a
 real second screen instead of a window fighting for space during the conversation.
 
+Press **Start listening** in the live view and pick the microphone. The portal runs
+the local ear (`listen.mjs`) for you, shows what it last heard so you know it's
+working, and closes the mic when you stop or end the call. If the microphone can't
+be opened, it tells you to grant your terminal app mic access. You can still run
+`node listen.mjs <call-id>` in a terminal if you prefer.
+
 A browser-mic fallback is built into the portal if you'd rather not run the ear.
 It uses the browser's speech API, which sends audio to the browser vendor — the UI
 says so plainly, because for these calls that difference is the whole point.

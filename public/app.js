@@ -282,10 +282,9 @@ function stageAgenda(call) {
 
     <h2>Start the call</h2>
     <div class="card">
-      <p style="margin:0 0 10px">In a second terminal, from this folder:</p>
-      <p class="mono" style="background:var(--sunk);padding:10px 12px;border-radius:4px;margin:0 0 10px">node listen.mjs ${call.id}</p>
-      <p class="m" style="margin:0">Take the call on another device with its speakers on. This machine just hears the room —
-      nothing is installed on the call device, and the audio never leaves here.</p>
+      <p style="margin:0 0 10px">Go live, pick the microphone, and press <b>Start listening</b>. Take the call on another
+      device with its speakers on — or sit in the room with this machine. It transcribes locally; the audio never leaves here.</p>
+      <p class="m" style="margin:0">Prefer a terminal? <span class="mono">node listen.mjs ${esc(call.id)}</span> does the same thing.</p>
     </div>
     <div class="row" style="margin-top:16px"><button id="go">Go live →</button></div>
   </div>`;
@@ -343,10 +342,17 @@ function stageLive(call) {
       <div class="row">
         <span class="spin" id="conn">connecting…</span>
         <span class="spin" id="lines">${call.lines?.length ?? 0} lines</span>
-        <button class="ghost" id="mic">Use this browser's mic</button>
         <button class="ghost" id="force">Check now</button>
         <button id="end">End &amp; debrief</button>
       </div>
+    </div>
+    <div class="earbar" id="earbar">
+      <span class="dot" id="eardot"></span>
+      <span id="earstate">Not listening</span>
+      <select id="micsel" title="Microphone"><option value="">Default microphone</option></select>
+      <button id="listen">Start listening</button>
+      <span class="heard" id="heard"></span>
+      <button class="ghost small" id="mic" title="Fallback: sends audio to your browser vendor">Browser mic instead</button>
     </div>
     <div class="liveboard">
       <div><h2>Agenda</h2><div id="qs"></div></div>
@@ -396,13 +402,50 @@ function stageLive(call) {
   };
   setSay(call.sayNext);
 
+  // The local ear — the server runs listen.mjs; audio stays on this machine.
+  let listening = false;
+  const paintEar = (st) => {
+    listening = !!(st.on && st.mine !== false);
+    $("#eardot").className = "dot" + (listening ? " on" : "");
+    $("#earstate").textContent = listening
+      ? `Listening · ${st.device || "microphone"} · on this machine`
+      : st.on && st.mine === false ? "The mic is in use by another call" : "Not listening";
+    $("#listen").textContent = listening ? "Stop listening" : "Start listening";
+    $("#listen").className = listening ? "danger" : "";
+    $("#micsel").disabled = listening;
+    if (st.heard) $("#heard").textContent = `heard: “${st.heard}”`;
+  };
+  api("/api/microphones").then(({ microphones, problems }) => {
+    for (const m of microphones) $("#micsel").insertAdjacentHTML("beforeend", `<option value="${esc(m.id)}">${esc(m.name)}</option>`);
+    if (problems.length) {
+      $("#listen").disabled = true;
+      $("#err").innerHTML = `<div class="err">Can't listen on this machine yet:\n${esc(problems.join("\n"))}</div>`;
+    }
+  }).catch(() => {});
+  $("#listen").onclick = async () => {
+    $("#err").innerHTML = "";
+    $("#listen").disabled = true;
+    try {
+      const sel = $("#micsel");
+      paintEar(await post(`/api/calls/${call.id}/listen`, listening
+        ? { on: false }
+        : { on: true, device: sel.value, deviceName: sel.selectedOptions[0]?.textContent }));
+    } catch (e) { $("#err").innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+    $("#listen").disabled = false;
+  };
+
   const es = new EventSource(`/api/calls/${call.id}/events`);
   es.onopen = () => ($("#conn").textContent = "live");
   es.onerror = () => ($("#conn").textContent = "disconnected");
   let n = call.lines?.length ?? 0;
   es.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === "line") $("#lines").textContent = `${++n} lines`;
+    if (m.type === "line") { $("#lines").textContent = `${++n} lines`; $("#heard").textContent = `heard: “${m.text}”`; }
+    if (m.type === "ear") {
+      paintEar(m);
+      if (m.error) $("#err").innerHTML = `<div class="err">${esc(m.error)}</div>`;
+      else if (m.warning) $("#err").innerHTML = `<div class="note warn">${esc(m.warning)}</div>`;
+    }
     if (m.type === "flag") addFlag(m.flag);
     if (m.type === "answered") { answered.add(m.id); paintQs(); }
     if (m.type === "sayNext") setSay(m.text);
@@ -416,7 +459,7 @@ function stageLive(call) {
   $("#mic").onclick = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return ($("#err").innerHTML = `<div class="err">No speech API here — use node listen.mjs instead.</div>`);
-    if (recog) { recog.stop(); recog = null; $("#mic").textContent = "Use this browser's mic"; return; }
+    if (recog) { recog.stop(); recog = null; $("#mic").textContent = "Browser mic instead"; return; }
     recog = new SR();
     recog.continuous = true; recog.interimResults = false; recog.lang = "en-US";
     recog.onresult = (e) => {
@@ -427,6 +470,7 @@ function stageLive(call) {
     recog.onend = () => { if (recog) recog.start(); };
     recog.start();
     $("#mic").textContent = "Stop browser mic";
+    if (listening) post(`/api/calls/${call.id}/listen`, { on: false }).then(paintEar);
     $("#err").innerHTML = `<div class="note warn">Browser mic on — this one sends audio to your browser vendor. The local ear (<span class="mono">node listen.mjs ${call.id}</span>) does not.</div>`;
   };
 
