@@ -278,6 +278,7 @@ function stageAgenda(call) {
     <h1>${esc(a.title)}</h1>
     <p class="sub">Proposed from your context. Edit anything, drop what you don't need, then start the call.</p>
 
+    ${call.augment?.error ? `<div class="note warn">${esc(call.augment.error)} — so these questions are built from your documents alone, without the research.</div>` : ""}
     ${top3(call.augment?.validations)}
 
     <h2>Your questions <span class="m">· must-asks first</span></h2>
