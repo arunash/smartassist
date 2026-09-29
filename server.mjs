@@ -45,12 +45,12 @@ app.use((req, r, next) => {
   }
 
   if (TOKEN) {
-    const cookie = /(?:^|;\s*)sa_token=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
+    const cookie = /(?:^|;\s*)sotto_token=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
     const given = req.query.t ?? cookie;
     const ok = typeof given === "string" && given.length === TOKEN.length &&
       crypto.timingSafeEqual(Buffer.from(given), Buffer.from(TOKEN));
     if (!ok) return r.status(401).end("Sotto: open the link with the access token printed at startup.");
-    if (req.query.t) r.setHeader("Set-Cookie", `sa_token=${TOKEN}; HttpOnly; SameSite=Strict; Path=/`);
+    if (req.query.t) r.setHeader("Set-Cookie", `sotto_token=${TOKEN}; HttpOnly; SameSite=Strict; Path=/`);
   }
 
   r.setHeader("Content-Security-Policy",

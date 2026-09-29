@@ -80,7 +80,7 @@ setInterval(async () => {
           headers: {
             "Content-Type": "application/json",
             // Needed only when the portal is opened to the network (HOST=…).
-            ...(process.env.SOTTO_TOKEN ? { Cookie: `sa_token=${process.env.SOTTO_TOKEN}` } : {}),
+            ...(process.env.SOTTO_TOKEN ? { Cookie: `sotto_token=${process.env.SOTTO_TOKEN}` } : {}),
           },
           body: JSON.stringify({ text: speech, speaker: "room" }),
         }).catch((e) => console.error(`portal unreachable: ${e.message}`));
