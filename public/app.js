@@ -69,7 +69,7 @@ async function listCalls() {
   const [calls, profiles] = await Promise.all([api("/api/calls"), api("/api/profiles")]);
   view.innerHTML = `<div class="wrap">
     <h1>Your calls</h1>
-    <p class="sub">Add your context and what you want out of a conversation. SmartAssist proposes what to
+    <p class="sub">Add your context and what you want out of a conversation. Sotto proposes what to
     ask, sits with you while it happens, and writes up what was actually agreed.</p>
 
     <h2>New call</h2>
@@ -246,14 +246,30 @@ function stageContext(call) {
     $("#spin").textContent = $("#research").checked
       ? "Reading your context, researching what it does not cover, then proposing topics…"
       : "Reading your context, checking it against itself, then proposing topics — no external research…";
+    const t0 = Date.now();
+    const tick = setInterval(async () => {
+      const p = await api(`/api/calls/${call.id}/progress`).catch(() => null);
+      const secs = Math.round((Date.now() - t0) / 1000);
+      if (p?.text) $("#spin").textContent = `${p.text} ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+    }, 1000);
     try {
       await post(`/api/calls/${call.id}/prepare`);
+      clearInterval(tick);
       showCall(call.id);
-    } catch (e) { fail(e); $("#prep").disabled = false; $("#spin").textContent = ""; }
+    } catch (e) { clearInterval(tick); fail(e); $("#prep").disabled = false; $("#spin").textContent = ""; }
   };
 }
 
 /* ---------------------------------------------------------------- 2 agenda */
+
+// The three findings worth knowing before you dial — one line each, the rest folded away.
+const SEV = { high: 0, medium: 1, low: 2 };
+function top3(validations) {
+  const v = [...(validations ?? [])].sort((a, b) => (SEV[a.severity] ?? 3) - (SEV[b.severity] ?? 3)).slice(0, 3);
+  if (!v.length) return "";
+  return `<div class="card before"><div class="lb">Before you dial</div>
+    <ul>${v.map((x) => `<li><details><summary><b>${esc(x.issue)}</b></summary><span class="m">${esc(x.howToSettle)}</span></details></li>`).join("")}</ul></div>`;
+}
 
 function stageAgenda(call) {
   const a = call.agenda;
@@ -262,41 +278,35 @@ function stageAgenda(call) {
     <h1>${esc(a.title)}</h1>
     <p class="sub">Proposed from your context. Edit anything, drop what you don't need, then start the call.</p>
 
-    ${a.rules?.length ? `<div class="note"><b>Standing rules — these outrank the agenda</b>
-      <ul>${a.rules.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
+    ${top3(call.augment?.validations)}
 
+    <h2>Your questions <span class="m">· must-asks first</span></h2>
     <div id="qs"></div>
 
-    <h2>What the engine did with your context</h2>
-    ${call.augment?.researched === false ? `<p class="sub">External research was off — nothing below comes from outside your material.</p>` : ""}
-    ${panel("This doesn't hold up", call.augment?.validations, "warn", (v) =>
+    ${a.rules?.length ? `<div class="note"><b>Ground rules</b>
+      <ul>${a.rules.slice(0, 3).map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
+
+    <details class="more"><summary>Everything it read and researched</summary>
+    ${call.augment?.researched === false ? `<p class="sub">External research was off — nothing here comes from outside your material.</p>` : ""}
+    ${panel("All findings", call.augment?.validations, "warn", (v) =>
       `<b>${esc(v.issue)}</b> <span class="tag">${esc(v.severity)}</span><br />${esc(v.detail)}<br /><span class="m">Settle it: ${esc(v.howToSettle)}</span>`)}
-    ${panel("Added — researched, not from your files", call.augment?.augmentations, "", (a) =>
+    ${panel("Researched — not from your files", call.augment?.augmentations, "", (a) =>
       `<b>${esc(a.point)}</b> <span class="tag">${esc(a.confidence)}</span><br />${esc(a.detail)}<br /><span class="m">${esc(a.basis)}${
         safeUrl(a.source) ? ` · <a href="${esc(safeUrl(a.source))}" target="_blank" rel="noopener noreferrer">source</a>` : ""}</span>`)}
-    ${panel("Derived from your own numbers", call.augment?.derivedFacts, "", (f) =>
+    ${panel("Worked out from your numbers", call.augment?.derivedFacts, "", (f) =>
       `<b>${esc(f.fact)}:</b> ${esc(f.value)}<br /><span class="m">${esc(f.basis)}</span>`)}
-    ${panel("Still missing from your context", call.gaps, "warn", (g) => esc(g))}
+    ${panel("Missing from your documents", call.gaps, "warn", (g) => esc(g))}
+    </details>
 
-
-
-    <h2>Start the call</h2>
-    <div class="card">
-      <p style="margin:0 0 10px">Go live, pick the microphone, and press <b>Start listening</b>. Take the call on another
-      device with its speakers on — or sit in the room with this machine. It transcribes locally; the audio never leaves here.</p>
-      <p class="m" style="margin:0">Prefer a terminal? <span class="mono">node listen.mjs ${esc(call.id)}</span> does the same thing.</p>
-    </div>
     <div class="row" style="margin-top:16px"><button id="go">Go live →</button></div>
   </div>`;
 
+  // Must-asks first, then the rest in the order proposed.
+  a.questions.sort((x, y) => Number(!!y.mustAsk) - Number(!!x.mustAsk));
   const paint = () => {
-    const byTopic = {};
-    for (const q of a.questions) (byTopic[q.topic] ??= []).push(q);
-    $("#qs").innerHTML = Object.entries(byTopic)
-      .map(
-        ([t, qs]) => `<div class="topic">${esc(t)}</div>` + qs.map((q) => `
+    $("#qs").innerHTML = a.questions.map((q) => `
         <div class="q" data-id="${esc(q.id)}">
-          <div class="qs">${esc(q.short)}</div>
+          <div class="qs">${esc(q.short)}${q.mustAsk ? ' <span class="must">must</span>' : ""}</div>
           <div class="qd">
             <p><b>Ask:</b> ${esc(q.ask)}</p>
             <p><b>Why:</b> ${esc(q.why)}</p>
@@ -305,9 +315,7 @@ function stageAgenda(call) {
             <p><b>Follow up:</b> ${esc(q.followUp)}</p>
             <button class="danger" data-drop="${esc(q.id)}" style="padding:3px 9px;font-size:12px">Remove question</button>
           </div>
-        </div>`).join(""),
-      )
-      .join("");
+        </div>`).join("");
     $("#qs").querySelectorAll(".q").forEach((el) => {
       el.querySelector(".qs").onclick = () => el.classList.toggle("open");
     });
@@ -334,9 +342,10 @@ function stageAgenda(call) {
 /* ------------------------------------------------------------------ 3 live */
 
 function stageLive(call) {
-  const answered = new Set(call.answered);
+  const status = { ...(call.questionStatus ?? {}) };
+  const qs = call.agenda.questions;
   view.innerHTML = `<div class="wrap wide">
-    ${steps("live")}
+    
     <div class="row" style="justify-content:space-between;margin-bottom:12px">
       <div><b>${esc(call.title)}</b> <span class="m">· ${esc(call.who || "")}</span></div>
       <div class="row">
@@ -354,29 +363,34 @@ function stageLive(call) {
       <span class="heard" id="heard"></span>
       <button class="ghost small" id="mic" title="Fallback: sends audio to your browser vendor">Browser mic instead</button>
     </div>
+    <div id="now" class="now empty"></div>
     <div class="liveboard">
-      <div><h2>Agenda</h2><div id="qs"></div></div>
-      <div><h2>Live</h2><div id="flags"></div></div>
+      <div><h2>Agenda <span class="m" id="qprog"></span></h2><div id="qs"></div></div>
+      <div><h2>Captured</h2><div id="cap"></div>
+        <p class="m" id="capempty">Names, numbers, dates and promises land here as they're said.</p></div>
     </div>
-    <div id="say" class="idle">Listening — nothing worth interrupting for.</div>
     <div id="err"></div>
   </div>`;
 
+  // Agenda as a checklist. Must-asks first; state comes from the live model (or a
+  // shift-click from you): ○ open · ◐ partial · ⚠ dodged · ✓ answered.
+  const ICON = { answered: "✓", partial: "◐", dodged: "⚠" };
   const paintQs = () => {
-    const byTopic = {};
-    for (const q of call.agenda.questions) (byTopic[q.topic] ??= []).push(q);
-    $("#qs").innerHTML = Object.entries(byTopic)
-      .map(([t, qs]) => `<div class="topic">${esc(t)}</div>` + qs.map((q) => `
-        <div class="q ${answered.has(q.id) ? "done" : ""}" data-id="${esc(q.id)}">
-          <div class="qs">${answered.has(q.id) ? "✓ " : ""}${esc(q.short)}</div>
-          <div class="qd"><p><b>Ask:</b> ${esc(q.ask)}</p><p><b>Answered when:</b> ${esc(q.answeredWhen)}</p>
-          <p><b>Follow up:</b> ${esc(q.followUp)}</p></div>
-        </div>`).join(""))
-      .join("");
+    const done = qs.filter((q) => status[q.id]?.status === "answered").length;
+    $("#qprog").textContent = `· ${done} of ${qs.length}`;
+    $("#qs").innerHTML = qs.map((q) => {
+      const st = status[q.id];
+      return `<div class="q ${st?.status ?? ""}" data-id="${esc(q.id)}">
+        <div class="qs"><span class="qi">${ICON[st?.status] ?? "○"}</span>${esc(q.short)}${q.mustAsk ? ' <span class="must">must</span>' : ""}</div>
+        ${st && st.status !== "answered" ? `<div class="qq">“${esc(st.quote)}”</div>` : ""}
+        <div class="qd"><p><b>Ask:</b> ${esc(q.ask)}</p><p><b>Answered when:</b> ${esc(q.answeredWhen)}</p>
+        <p><b>Follow up:</b> ${esc(q.followUp)}</p></div>
+      </div>`;
+    }).join("");
     $("#qs").querySelectorAll(".q").forEach((el) => {
       el.querySelector(".qs").onclick = (e) => {
         if (e.shiftKey) {
-          answered.add(el.dataset.id);
+          status[el.dataset.id] = { status: "answered", quote: "marked by you" };
           post(`/api/calls/${call.id}/answered`, { id: el.dataset.id });
           paintQs();
         } else el.classList.toggle("open");
@@ -385,22 +399,32 @@ function stageLive(call) {
   };
   paintQs();
 
-  const addFlag = (f) => {
-    const d = document.createElement("div");
-    d.className = "flag " + f.kind;
-    d.innerHTML = `<div class="fl">${esc(f.label)}</div><div class="fq">${esc(f.quote ?? "")}</div>`;
-    $("#flags").prepend(d);
-    if (f.questionId) $(`.q[data-id="${CSS.escape(f.questionId)}"]`)?.classList.add("hot");
+  // The one thing on screen. Empty is the normal state.
+  const KIND = { say: "Say", ask: "Ask", caught: "Caught" };
+  const paintNow = (n) => {
+    const el = $("#now");
+    if (!n) {
+      el.className = "now empty";
+      el.innerHTML = `<span class="nowidle">Listening. Nothing worth interrupting for.</span>`;
+      return;
+    }
+    el.className = `now ${n.kind}`;
+    el.innerHTML = `<div class="nowk">${KIND[n.kind] ?? "Now"}</div>
+      <div class="nowl">“${esc(n.line)}”</div>
+      <div class="nowy">${esc(n.why)}${n.evidence ? ` · <span>${esc(n.evidence)}</span>` : ""}</div>
+      <button class="ghost nowx" title="Done (Esc)">Done</button>`;
+    el.querySelector(".nowx").onclick = dismiss;
   };
-  (call.flags ?? []).forEach(addFlag);
+  const dismiss = () => { paintNow(null); post(`/api/calls/${call.id}/now/dismiss`); };
+  onkeydown = (e) => { if (e.key === "Escape" && $("#now") && !$("#now").classList.contains("empty")) dismiss(); };
+  paintNow(call.now);
 
-  const setSay = (t) => {
-    const el = $("#say");
-    if (!t) { el.textContent = "Listening — nothing worth interrupting for."; el.className = "idle"; return; }
-    el.textContent = "“" + t + "”";
-    el.className = "";
+  const addCaptured = (c) => {
+    $("#capempty").style.display = "none";
+    $("#cap").insertAdjacentHTML("beforeend",
+      `<div class="capi" title="${esc(c.quote)}"><span class="capl">${esc(c.label)}</span><span class="capv">${esc(c.value)}</span></div>`);
   };
-  setSay(call.sayNext);
+  (call.captured ?? []).forEach(addCaptured);
 
   // The local ear — the server runs listen.mjs; audio stays on this machine.
   let listening = false;
@@ -446,9 +470,9 @@ function stageLive(call) {
       if (m.error) $("#err").innerHTML = `<div class="err">${esc(m.error)}</div>`;
       else if (m.warning) $("#err").innerHTML = `<div class="note warn">${esc(m.warning)}</div>`;
     }
-    if (m.type === "flag") addFlag(m.flag);
-    if (m.type === "answered") { answered.add(m.id); paintQs(); }
-    if (m.type === "sayNext") setSay(m.text);
+    if (m.type === "now") paintNow(m.now);
+    if (m.type === "question") { status[m.id] = { status: m.status, quote: m.quote }; paintQs(); }
+    if (m.type === "captured") addCaptured(m.item);
     if (m.type === "error") $("#err").innerHTML = `<div class="err">${esc(m.message)}</div>`;
   };
 
@@ -498,7 +522,9 @@ function stageDebrief(call) {
     <p class="sub">Saved to <span class="mono">data/calls/${call.id}/debrief.md</span>, with the transcript beside it.</p>
     <div class="md" id="md"></div>
   </div>`;
-  $("#md").innerHTML = md(call.debrief);
+  // Lead with what they'll use; fold the detail.
+  const [head, ...rest] = String(call.debrief).split(/^## Details\s*$/m);
+  $("#md").innerHTML = md(head) + (rest.length ? `<details class="more"><summary>Details — commitments, gaps, what to verify</summary>${md(rest.join(""))}</details>` : "");
   $("#copy").onclick = async () => {
     await navigator.clipboard.writeText(call.debrief);
     $("#copy").textContent = "Copied";

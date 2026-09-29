@@ -1,6 +1,8 @@
-# SmartAssist
+# Sotto
 
-**A live assistant for the conversations that matter.** You give it your context and
+*sotto voce — spoken under the breath.*
+
+**A quiet word, mid-call.** A live assistant for the conversations that matter. You give it your context and
 what you want out of a call. It proposes what to ask, sits with you while the call
 happens, tells you when to speak up — and afterwards writes up what was actually
 agreed, what never got answered, and what to do next.
@@ -15,7 +17,7 @@ In the moment, you have about four seconds to notice that the answer you just go
 wasn't an answer. Afterwards it's obvious. That gap is the whole problem.
 
 It shows up differently depending on who you're talking to, and that difference is
-what SmartAssist actually encodes:
+what Sotto actually encodes:
 
 | | How the conversation fails you | So it… |
 |---|---|---|
@@ -23,6 +25,7 @@ what SmartAssist actually encodes:
 | **Doctor** | **Time**, not evasion — they're behind, not hiding | triages ruthlessly, insists the plan is complete, catches dropped follow-ups |
 | **Insurance / billing** | Facts slipping past | captures the reference number, the denial code, the deadline, the name |
 | **School / IEP** | What's said ≠ what's in the document | holds spoken promises against the written plan |
+| **Offer / negotiation** | Anchoring and pressure — "that's standard", "sign today" | holds them to their own earlier words, keeps your ask from being closed out |
 | **Contractor / vendor** | Scope and price drift | pins what's excluded, what would change the price |
 
 ## How it works
@@ -50,7 +53,7 @@ numbers.
   back on your material and tells you what doesn't hold up: figures that contradict
   each other, values outside a plausible range, dates already passed, conclusions
   your numbers don't actually support.
-- **Propose** — questions grounded in your figures, each with what would count as a
+- **Propose** — at most seven questions, three marked *must-ask*, grounded in your figures, each with what would count as a
   real answer, what a dodge looks like, and the follow-up.
 
 Provenance is kept separate the whole way through, and that is a safety property
@@ -62,14 +65,23 @@ never come back at a doctor or a CPA as though it came from your records.
 The portal shows all three, collapsed, under the questions — including what it thinks
 is wrong with what you gave it.
 
-**3 · Live assist.** Your agenda ticks off on the left as questions genuinely get
-answered. Flags accumulate on the right — a dodge, a claim that contradicts your own
-records, an opening worth pressing, something being decided against your interest.
+**3 · Live assist.** The screen has room for one thing, on purpose.
 
-The bar at the bottom is the only thing you need while someone is talking. It stays
-quiet by default and lights up when interrupting is actually worth it.
+- **Now** — the single thing worth doing in the next minute, phrased to read aloud:
+  *say* this, *ask* this, or *caught* — a claim that contradicts your own records, with
+  the evidence underneath. Empty most of the time. It clears itself once you've acted on it,
+  and a new one only replaces it if it matters more.
+- **Agenda** — your questions as a checklist: answered ✓, partial ◐, dodged ⚠ (with the
+  dodge quoted). Shift-click to tick one yourself.
+- **Captured** — what you'd otherwise be scribbling: a new number, a name, a deadline, a
+  promise with who and when.
 
-**4 · Debrief.** Where it leaves you, commitments made with quotes, what never got
+Everything else it notices goes quietly into the debrief. A prompt that fires constantly
+gets ignored at the moment it matters.
+
+**4 · Debrief.** It opens with the two things you'll actually use — *in 30 seconds* (where
+you stand, what's at risk, the next action) and *send this* (the follow-up message). The
+detail is folded underneath: where it leaves you, commitments made with quotes, what never got
 answered and how it was deflected, what contradicted your records, numbered next
 steps with owners and dates, what to verify independently and who must *not* be the
 one to verify it — and a follow-up message ready to send.
@@ -112,8 +124,8 @@ the access token printed at startup.
 Requires Node 20+, `ffmpeg`, and `whisper-cli` (whisper.cpp).
 
 ```bash
-git clone https://github.com/arunash/smartassist.git
-cd smartassist
+git clone https://github.com/arunash/sotto.git
+cd sotto
 npm install
 
 brew install ffmpeg whisper-cpp        # macOS
@@ -135,7 +147,7 @@ node listen.mjs 20260918-fwsz
 ## The setup that works best
 
 Take the call on a **second device** — laptop or phone — with its speakers on. Run
-SmartAssist on the machine in front of you. It simply hears the room: your voice
+Sotto on the machine in front of you. It simply hears the room: your voice
 directly, and theirs through the other device's speaker.
 
 Nothing is installed on the call device, nothing joins the meeting, and you get a
@@ -169,9 +181,9 @@ Plain files. Read them, grep them, delete them.
 | `ANTHROPIC_API_KEY` | in `.env` — never leaves this machine |
 | `PORT` | portal port, default 7400 |
 | `HOST` | bind address, default `127.0.0.1`; anything else requires the startup token |
-| `SMARTASSIST_TOKEN` | fixed access token for `HOST` mode (random each start otherwise) |
-| `SMARTASSIST_MODEL` | default `claude-opus-5` |
-| `SMARTASSIST_DATA` | where calls are stored |
+| `SOTTO_TOKEN` | fixed access token for `HOST` mode (random each start otherwise) |
+| `SOTTO_MODEL` | default `claude-opus-5` |
+| `SOTTO_DATA` | where calls are stored |
 | `WHISPER_MODEL` | path to the ggml model |
 | `AUDIO_DEVICE` | ffmpeg input, default `:0` |
 | `SEGMENT` | seconds per transcription chunk, default 12 |

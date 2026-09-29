@@ -16,7 +16,7 @@ const PORT = Number(process.env.PORT ?? 7400);
 // needs the access token printed at startup.
 const HOST = process.env.HOST ?? "127.0.0.1";
 const LOOPBACK = ["127.0.0.1", "::1", "localhost"].includes(HOST);
-const TOKEN = LOOPBACK ? null : (process.env.SMARTASSIST_TOKEN || crypto.randomBytes(24).toString("base64url"));
+const TOKEN = LOOPBACK ? null : (process.env.SOTTO_TOKEN || process.env.SMARTASSIST_TOKEN || crypto.randomBytes(24).toString("base64url"));
 const STAGES = new Set(["context", "agenda", "live", "debrief"]);
 const ID = /^\d{8}-[a-z0-9]{4}$/;
 const apiKey = readKey();
@@ -49,7 +49,7 @@ app.use((req, r, next) => {
     const given = req.query.t ?? cookie;
     const ok = typeof given === "string" && given.length === TOKEN.length &&
       crypto.timingSafeEqual(Buffer.from(given), Buffer.from(TOKEN));
-    if (!ok) return r.status(401).end("SmartAssist: open the link with the access token printed at startup.");
+    if (!ok) return r.status(401).end("Sotto: open the link with the access token printed at startup.");
     if (req.query.t) r.setHeader("Set-Cookie", `sa_token=${TOKEN}; HttpOnly; SameSite=Strict; Path=/`);
   }
 
@@ -172,12 +172,18 @@ app.delete("/api/calls/:id/context/:idx", (req, r) => {
 
 /* -------------------------------------------------- digest + agenda (step 2) */
 
+const prepProgress = new Map();
+app.get("/api/calls/:id/progress", (req, r) => r.json(prepProgress.get(req.params.id) ?? null));
+
 app.post("/api/calls/:id/prepare", async (req, r) => {
   const call = store.load(req.params.id);
   if (!call) return r.status(404).json({ error: "no such call" });
   if (!call.contextSources.length) return r.status(400).json({ error: "Add some context first" });
 
+  // Progress for the page: preparing takes a few minutes and should never look frozen.
+  const step = (text) => { prepProgress.set(call.id, { text, at: Date.now() }); };
   try {
+    step("Reading your documents…");
     const raw = sourceSummary(call.contextSources);
     const d = await digestContext({ apiKey, goal: call.goal, profile: call.profile, who: call.who, raw });
     call.contextDigest = d.digest;
@@ -185,6 +191,7 @@ app.post("/api/calls/:id/prepare", async (req, r) => {
     call.gaps = d.gaps;
 
     // Second pass: what the files don't say, and what in them doesn't hold up.
+    step(call.allowResearch !== false ? "Researching what your documents don't say…" : "Checking your documents against each other…");
     const augment = await augmentAndValidate({
       apiKey, who: call.who, goal: call.goal, profile: call.profile,
       digest: d.digest, keyFacts: d.keyFacts,
@@ -197,6 +204,7 @@ app.post("/api/calls/:id/prepare", async (req, r) => {
       .map((p) => `### ${p.title} (${p.createdAt.slice(0, 10)})\n${p.debrief.slice(0, 6000)}`)
       .join("\n\n");
 
+    step("Writing your questions…");
     const agenda = await proposeAgenda({
       apiKey,
       who: call.who,
@@ -207,6 +215,11 @@ app.post("/api/calls/:id/prepare", async (req, r) => {
       augment,
       priors,
     });
+    // Hold the model to the limits the live screen is designed around.
+    agenda.questions = agenda.questions.slice(0, 7);
+    let musts = 0;
+    for (const q of agenda.questions) if (q.mustAsk && ++musts > 3) q.mustAsk = false;
+    agenda.rules = (agenda.rules ?? []).slice(0, 3);
     call.agenda = agenda;
     if (!call.title || call.title === "Untitled call") call.title = agenda.title;
     call.stage = "agenda";
@@ -215,6 +228,8 @@ app.post("/api/calls/:id/prepare", async (req, r) => {
   } catch (e) {
     console.error("[prepare]", e.stack ?? e.message);
     r.status(500).json({ error: e.message });
+  } finally {
+    prepProgress.delete(call.id);
   }
 });
 
@@ -282,13 +297,26 @@ app.post("/api/calls/:id/analyze", (req, r) => {
   r.json({ ok: true });
 });
 
+// The user overrides the model: tick a question themselves, or clear the Now card.
 app.post("/api/calls/:id/answered", (req, r) => {
   const call = store.load(req.params.id);
   if (!call) return r.status(404).json({ error: "no such call" });
   const id = String(req.body?.id ?? "");
-  if (id && call.agenda?.questions?.some((q) => q.id === id) && !call.answered.includes(id)) call.answered.push(id);
+  if (!call.agenda?.questions?.some((q) => q.id === id)) return r.status(400).json({ error: "no such question" });
+  call.questionStatus = { ...(call.questionStatus ?? {}), [id]: { status: "answered", quote: "marked by you" } };
+  if (call.now?.questionId === id) call.now = null;
   store.save(call);
-  emit(call.id, { type: "answered", id });
+  emit(call.id, { type: "question", id, status: "answered", quote: "marked by you" });
+  if (!call.now) emit(call.id, { type: "now", now: null });
+  r.json({ ok: true });
+});
+
+app.post("/api/calls/:id/now/dismiss", (req, r) => {
+  const call = store.load(req.params.id);
+  if (!call) return r.status(404).json({ error: "no such call" });
+  call.now = null;
+  store.save(call);
+  emit(call.id, { type: "now", now: null });
   r.json({ ok: true });
 });
 
@@ -322,16 +350,80 @@ const themeOf = (label) =>
  * phrasings of one point is worse than one: the pane becomes a firehose, they stop
  * reading it, and that costs them the flag that actually mattered.
  */
-function isRepeat(flags, label) {
-  const a = themeOf(label);
+function isRepeat(items, text) {
+  const a = themeOf(text);
   if (!a.size) return false;
-  return flags.slice(-25).some((f) => {
-    const b = themeOf(f.label);
+  return items.slice(-25).some((f) => {
+    const b = themeOf(f.line ?? f.label ?? "");
     if (!b.size) return false;
     let shared = 0;
     for (const w of a) if (b.has(w)) shared++;
     return shared / Math.min(a.size, b.size) >= 0.5;
   });
+}
+
+/**
+ * One pass of the live model → what the screen shows. The screen has room for ONE
+ * thing, so the model's suggestion has to earn its place: it replaces what's showing
+ * only if nothing is, if it matters more, or if the current one has had its moment.
+ * Losers aren't lost — they go to the debrief.
+ */
+const NOW_MIN_MS = 30_000;
+const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9$.%]/g, "");
+
+function applyLive(id, call, result) {
+  call.questionStatus ??= {};
+  call.captured ??= [];
+  call.notes ??= [];
+  call.nowHistory ??= [];
+
+  const known = new Set((call.agenda?.questions ?? []).map((q) => q.id));
+  for (const q of result.questions ?? []) {
+    if (!known.has(q.id)) continue;
+    const cur = call.questionStatus[q.id]?.status;
+    if (cur === "answered") continue; // a tick never gets taken back by the model
+    if (cur === q.status) continue;
+    call.questionStatus[q.id] = { status: q.status, quote: q.quote };
+    emit(id, { type: "question", id: q.id, status: q.status, quote: q.quote });
+  }
+
+  for (const c of result.captured ?? []) {
+    const dup = call.captured.some((x) => norm(x.value) === norm(c.value) || (norm(x.label) === norm(c.label) && norm(x.value) === norm(c.value)));
+    if (dup || !c.value?.trim()) continue;
+    const item = { label: c.label, value: c.value, quote: c.quote, at: Date.now() };
+    call.captured.push(item);
+    emit(id, { type: "captured", item });
+  }
+
+  for (const n of result.forDebrief ?? []) call.notes.push({ ...n, at: Date.now() });
+
+  if (result.clearNow && call.now) {
+    call.now = null;
+    emit(id, { type: "now", now: null });
+  }
+
+  const cand = result.now;
+  if (cand?.line?.trim()) {
+    const answered = cand.questionId && call.questionStatus[cand.questionId]?.status === "answered";
+    const stale = !call.now || Date.now() - call.now.at > NOW_MIN_MS;
+    // A claim contradicting their own record outranks a suggestion at the same priority.
+    const rank = (n) => n.priority * 2 + (n.kind === "caught" ? 1 : 0);
+    const stronger = call.now && rank(cand) > rank(call.now);
+    if (answered || isRepeat(call.nowHistory, cand.line)) {
+      call.notes.push({ note: cand.line, quote: cand.evidence, at: Date.now() });
+    } else if (stale || stronger) {
+      call.now = { ...cand, at: Date.now() };
+      call.nowHistory.push(call.now);
+      emit(id, { type: "now", now: call.now });
+    } else {
+      call.notes.push({ note: cand.line, quote: cand.evidence, at: Date.now() });
+    }
+  }
+  // If what's showing was about a question that just got answered, clear it.
+  if (call.now?.questionId && call.questionStatus[call.now.questionId]?.status === "answered") {
+    call.now = null;
+    emit(id, { type: "now", now: null });
+  }
 }
 
 const MIN_GAP_MS = 9000;
@@ -362,27 +454,10 @@ async function maybeAnalyze(id, force = false) {
     const fresh2 = store.load(id); // re-read: lines may have arrived during the call
     fresh2.consumed = upTo;
 
-    for (const a of result.answered ?? []) {
-      if (!fresh2.answered.includes(a.id)) {
-        fresh2.answered.push(a.id);
-        emit(id, { type: "answered", id: a.id, quote: a.quote });
-      }
-    }
-    const add = (flag) => {
-      if (isRepeat(fresh2.flags, flag.label)) return;
-      fresh2.flags.push(flag);
-      emit(id, { type: "flag", flag });
-    };
-    for (const d of result.dodges ?? []) add({ kind: "dodge", label: d.label, quote: d.quote, questionId: d.questionId, at: Date.now() });
-    for (const c of result.contradictions ?? []) add({ kind: "contradiction", label: c.label, quote: `${c.theirClaim} — your record: ${c.yourFigure}`, at: Date.now() });
-    for (const o of result.openings ?? []) add({ kind: "opening", label: o.label, quote: o.ask, at: Date.now() });
-    for (const w of result.watchOuts ?? []) add({ kind: "watchout", label: w.label, quote: w.why, at: Date.now() });
-
-    fresh2.sayNext = result.sayNext ?? "";
-    emit(id, { type: "sayNext", text: fresh2.sayNext });
+    applyLive(id, fresh2, result);
     store.save(fresh2);
     s.lastAt = Date.now();
-    console.log(`[analyze ${id}] ${(result.dodges??[]).length}d ${(result.contradictions??[]).length}c ${(result.openings??[]).length}o ${(result.watchOuts??[]).length}w`);
+    console.log(`[analyze ${id}] now=${result.now ? `${result.now.kind}/${result.now.priority}` : "-"} q=${result.questions?.length ?? 0} cap=${result.captured?.length ?? 0} later=${result.forDebrief?.length ?? 0}`);
   } catch (e) {
     console.error(`[analyze ${id}]`, e.stack ?? e.message);
     emit(id, { type: "error", message: e.message });
@@ -436,7 +511,7 @@ function readKey() {
 }
 
 app.listen(PORT, HOST, () => {
-  console.log(`SmartAssist — http://localhost:${PORT}`);
+  console.log(`Sotto — http://localhost:${PORT}`);
   if (TOKEN) console.log(`⚠ listening on ${HOST} — open from another device with: http://<this-machine>:${PORT}/?t=${TOKEN}`);
   console.log(`model: ${MODEL} · data: ${store.DATA}`);
 });
